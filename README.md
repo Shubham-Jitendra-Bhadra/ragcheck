@@ -609,7 +609,3 @@ ragcheck/
 - Heuristic and overlap scorers work fully offline with no API key at all
 
 ---
-
-## License
-
-MIT
