@@ -9,6 +9,8 @@ type EvalCase struct {
 	RetrievedChunks []string // chunks retriever returned
 	Answer          string   // the generated answer
 	Reference       string   // ground truth — needed for overlap + recall scorers
+	Model 		string   // the model that generated the answer
+	Metadata        map[string]string // any extra info about the case
 }
 
 // Score is the result from one scorer on one EvalCase.
