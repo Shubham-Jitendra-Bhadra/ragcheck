@@ -57,9 +57,7 @@ It runs those through up to 11 scorers across 4 approaches and returns a score b
 | `relevancy` | Does the answer address what was asked? |
 | `context_recall` | Did the retriever fetch the right documents? |
 | `hallucination` | Which specific claim is not supported by context? |
-| `completeness` | Does the answer cover all important aspects? |
-| `coherence` | Is the answer well structured and clear? |
-| `toxicity` | Does the answer contain harmful content? |
+
 
 ---
 
