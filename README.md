@@ -1,6 +1,6 @@
 # ragcheck
 
-A fast, Go-native RAG evaluation tool. Works as a CLI binary or an importable SDK.
+A fast, Go-native RAG evaluation tool. Works as a CLI binary or an importable Go SDK.
 Point it at your RAG pipeline outputs and get structured quality scores back — no Python, no heavy dependencies, single binary.
 
 ---
@@ -8,7 +8,7 @@ Point it at your RAG pipeline outputs and get structured quality scores back —
 ## Why ragcheck
 
 Most RAG eval tools are Python-only and require you to restructure your pipeline around them.
-ragcheck is a single Go binary that works with any stack — Python, Node, Java, Go — as long as you can produce a JSON file.
+ragcheck is a single Go binary that works with any stack — Python, Node.js, Java, Go — as long as you can produce a JSON file.
 It also embeds cleanly as an SDK inside Go RAG apps for real-time inline scoring.
 
 ---
@@ -21,13 +21,13 @@ ragcheck takes three things from each request your RAG app handles:
 - the **retrieved chunks** — what your retriever fetched
 - the **answer** — what your LLM generated
 
-It runs those through up to 11 scorers across 4 approaches and returns a score between 0.0 and 1.0 for each metric.
+It runs those through up to 15 scorers across 4 approaches and returns a score between 0.0 and 1.0 for each metric.
 
 ---
 
 ## Scoring approaches
 
-### Heuristic — free, instant, no API
+### Heuristic — free, instant, no API needed
 | Metric | What it checks |
 |---|---|
 | `answer_length` | Is the answer a reasonable length? |
@@ -36,7 +36,7 @@ It runs those through up to 11 scorers across 4 approaches and returns a score b
 | `chunk_utilisation` | What percentage of chunks contributed to the answer? |
 | `latency_ms` | How fast did your pipeline respond? |
 
-### Token overlap — free, instant, needs reference
+### Token overlap — free, instant, needs reference answer
 | Metric | What it checks |
 |---|---|
 | `f1_token_match` | Word-level overlap between answer and reference |
@@ -44,13 +44,13 @@ It runs those through up to 11 scorers across 4 approaches and returns a score b
 | `bleu_score` | N-gram phrase matching with brevity penalty |
 | `conciseness` | Answer length ratio vs reference |
 
-### Embedding similarity — cheap API call, catches paraphrasing
+### Embedding similarity — requires an embedding provider
 | Metric | What it checks |
 |---|---|
 | `answer_similarity` | Semantic similarity between answer and reference |
 | `chunk_relevance` | How relevant are retrieved chunks to the query |
 
-### LLM judge — most accurate, understands reasoning
+### LLM judge — most accurate, requires an LLM provider
 | Metric | What it checks |
 |---|---|
 | `faithfulness` | Is every claim grounded in the retrieved context? |
@@ -58,42 +58,39 @@ It runs those through up to 11 scorers across 4 approaches and returns a score b
 | `context_recall` | Did the retriever fetch the right documents? |
 | `hallucination` | Which specific claim is not supported by context? |
 
-
 ---
 
 ## Install
 
 ```bash
-go install github.com/yourusername/ragcheck/cmd/ragcheck@latest
+go install github.com/Shubham-Jitendra-Bhadra/ragcheck/cmd/ragcheck@latest
 ```
 
 Or download a prebuilt binary from the releases page.
 
 ---
 
-## CLI usage
+## Quick start
 
 ```bash
-export ANTHROPIC_API_KEY=your_key
+# set your API key
+export ANTHROPIC_API_KEY=sk-ant-...
 
-# run evaluation against a JSON file
+# run against a JSON file
 ragcheck run --input testdata/example.json
 
-# choose your judge model
-ragcheck run --input testdata/example.json --model claude-haiku-4-5-20251001
-
-# run only specific scorers
-ragcheck run --input testdata/example.json --scorers faithfulness,relevancy,bleu_score
+# see detailed results
+ragcheck report --run 1
 
 # compare two runs
 ragcheck compare --run-a 1 --run-b 2
-
-# export results
-ragcheck report --run 3 --format json
-ragcheck report --run 3 --format table
 ```
 
-### Input file format
+---
+
+## Input file format
+
+ragcheck reads a JSON array of eval cases. Every field except `query`, `retrieved_chunks`, and `answer` is optional.
 
 ```json
 [
@@ -106,7 +103,7 @@ ragcheck report --run 3 --format table
     ],
     "answer": "You can get a refund within 30 days of purchase.",
     "reference": "Refunds are processed within 5 to 7 business days for items in original condition.",
-    "model": "claude-sonnet-4-6",
+    "model": "gpt-4o",
     "metadata": {
       "latency_ms": "342",
       "chunk_size": "512",
@@ -116,25 +113,386 @@ ragcheck report --run 3 --format table
 ]
 ```
 
-`reference` is optional — scorers that need it skip gracefully when missing.
-`model` and `metadata` are optional — used for comparison and reporting.
+| Field | Required | Description |
+|---|---|---|
+| `query` | yes | the user's question |
+| `retrieved_chunks` | yes | chunks your retriever returned |
+| `answer` | yes | the generated answer |
+| `reference` | no | ground truth — needed for overlap + recall scorers |
+| `id` | no | identifier shown in reports |
+| `model` | no | which model generated the answer |
+| `metadata` | no | any extra context — latency, chunk size, temperature |
 
 ---
 
-## SDK usage
+## CLI usage
 
-For Go RAG apps — import the eval package directly and score inline:
+```bash
+# run all scorers
+ragcheck run --input cases.json
+
+# choose your judge model
+ragcheck run --input cases.json --model claude-haiku-4-5-20251001
+
+# run only specific scorers — useful when you have no API key
+ragcheck run --input cases.json --scorers answer_length,refusal_detection,f1_token_match
+
+# quality gate — exit non-zero if avg score below threshold
+ragcheck run --input cases.json --fail-below 0.75
+
+# use a different database path
+ragcheck run --input cases.json --db ./myproject/ragcheck.db
+
+# compare two runs side by side
+ragcheck compare --run-a 1 --run-b 2
+
+# full report for a run
+ragcheck report --run 3
+
+# export as JSON
+ragcheck report --run 3 --format json > results.json
+```
+
+---
+
+## Using ragcheck with Python
+
+Python users don't need to touch Go. Just capture your RAG pipeline outputs as a JSON file and point ragcheck at it.
+
+### Step 1 — capture your pipeline outputs
+
+Add a logger to your existing Python RAG handler:
+
+```python
+import json
+import time
+
+eval_cases = []
+
+def rag_handler(query: str) -> str:
+    start = time.time()
+
+    # your existing retriever
+    chunks = retriever.search(query)
+
+    # your existing generator
+    answer = llm.generate(query, chunks)
+
+    latency_ms = int((time.time() - start) * 1000)
+
+    # capture for ragcheck
+    eval_cases.append({
+        "id": f"req-{len(eval_cases)+1}",
+        "query": query,
+        "retrieved_chunks": chunks,
+        "answer": answer,
+        "reference": "",          # add ground truth if you have it
+        "model": "gpt-4o",        # whatever model you used
+        "metadata": {
+            "latency_ms": str(latency_ms),
+        }
+    })
+
+    return answer
+
+# after your test run, dump to file
+with open("ragcheck_input.json", "w") as f:
+    json.dump(eval_cases, f, indent=2)
+```
+
+### Step 2 — run ragcheck
+
+```bash
+ragcheck run --input ragcheck_input.json
+```
+
+### Step 3 — view results
+
+```bash
+ragcheck report --run 1
+ragcheck report --run 1 --format json | python -m json.tool
+```
+
+---
+
+## Using ragcheck with Node.js
+
+Same approach — capture outputs as JSON, point ragcheck at the file.
+
+### Step 1 — capture your pipeline outputs
+
+```javascript
+const fs = require('fs');
+
+const evalCases = [];
+
+async function ragHandler(query) {
+  const start = Date.now();
+
+  // your existing retriever
+  const chunks = await retriever.search(query);
+
+  // your existing generator
+  const answer = await llm.generate(query, chunks);
+
+  const latencyMs = Date.now() - start;
+
+  // capture for ragcheck
+  evalCases.push({
+    id: `req-${evalCases.length + 1}`,
+    query,
+    retrieved_chunks: chunks,
+    answer,
+    reference: '',          // add ground truth if you have it
+    model: 'gpt-4o',        // whatever model you used
+    metadata: {
+      latency_ms: String(latencyMs),
+    }
+  });
+
+  return answer;
+}
+
+// after your test run, dump to file
+function saveEvalCases() {
+  fs.writeFileSync(
+    'ragcheck_input.json',
+    JSON.stringify(evalCases, null, 2)
+  );
+}
+```
+
+### Step 2 — run ragcheck
+
+```bash
+ragcheck run --input ragcheck_input.json
+```
+
+### Step 3 — process results programmatically
+
+```javascript
+const { execSync } = require('child_process');
+
+const output = execSync(
+  'ragcheck report --run 1 --format json'
+).toString();
+
+const results = JSON.parse(output);
+console.log(results);
+```
+
+---
+
+## Using a different LLM as the judge
+
+By default ragcheck uses Anthropic's Claude as the judge. If you're building a Go RAG app and want to use a different LLM, implement the `LLMClient` interface:
+
+```go
+// the interface ragcheck expects — defined in internal/eval/llm/client.go
+type LLMClient interface {
+    Complete(ctx context.Context, system, user string) (string, error)
+}
+```
+
+### OpenAI example
+
+```go
+import "github.com/sashabaranov/go-openai"
+
+type OpenAIClient struct {
+    client *openai.Client
+    model  string
+}
+
+func NewOpenAIClient(apiKey, model string) *OpenAIClient {
+    return &OpenAIClient{
+        client: openai.NewClient(apiKey),
+        model:  model,
+    }
+}
+
+func (c *OpenAIClient) Complete(ctx context.Context, system, user string) (string, error) {
+    resp, err := c.client.CreateChatCompletion(ctx,
+        openai.ChatCompletionRequest{
+            Model: c.model,
+            Messages: []openai.ChatCompletionMessage{
+                {Role: "system", Content: system},
+                {Role: "user",   Content: user},
+            },
+        },
+    )
+    if err != nil {
+        return "", err
+    }
+    return resp.Choices[0].Message.Content, nil
+}
+
+// use it exactly like the Anthropic client
+client := NewOpenAIClient(os.Getenv("OPENAI_API_KEY"), "gpt-4o")
+scorer := llm.NewFaithfulnessScorer(client)
+```
+
+### Ollama example — fully local, no API cost
 
 ```go
 import (
-    "github.com/yourusername/ragcheck/internal/eval"
-    "github.com/yourusername/ragcheck/internal/eval/heuristic"
-    "github.com/yourusername/ragcheck/internal/eval/overlap"
-    "github.com/yourusername/ragcheck/internal/eval/llm"
-    ragllm "github.com/yourusername/ragcheck/internal/llm"
+    "bytes"
+    "encoding/json"
+    "net/http"
 )
 
-// set up scorers once at startup
+type OllamaClient struct {
+    host  string // e.g. "http://localhost:11434"
+    model string // e.g. "llama3", "mistral"
+}
+
+func NewOllamaClient(host, model string) *OllamaClient {
+    return &OllamaClient{host: host, model: model}
+}
+
+func (c *OllamaClient) Complete(ctx context.Context, system, user string) (string, error) {
+    body, _ := json.Marshal(map[string]any{
+        "model":  c.model,
+        "prompt": system + "\n\n" + user,
+        "stream": false,
+    })
+
+    req, _ := http.NewRequestWithContext(ctx, "POST",
+        c.host+"/api/generate", bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return "", err
+    }
+    defer resp.Body.Close()
+
+    var result struct {
+        Response string `json:"response"`
+    }
+    json.NewDecoder(resp.Body).Decode(&result)
+    return result.Response, nil
+}
+
+// use it — no API key, fully local
+client := NewOllamaClient("http://localhost:11434", "llama3")
+scorer := llm.NewFaithfulnessScorer(client)
+```
+
+### Any other provider
+
+Any struct with a `Complete(ctx, system, user) (string, error)` method works. AWS Bedrock, Google Gemini, Cohere, Mistral — wrap their SDK in 15 lines and plug it in.
+
+---
+
+## Using a different embedding model
+
+By default ragcheck uses Voyage AI for embeddings. To use a different provider implement the `Embedder` interface:
+
+```go
+// the interface ragcheck expects — defined in internal/eval/embedding/scorer.go
+type Embedder interface {
+    Embed(ctx context.Context, text string) ([]float64, error)
+}
+```
+
+### OpenAI embeddings example
+
+```go
+import "github.com/sashabaranov/go-openai"
+
+type OpenAIEmbedder struct {
+    client *openai.Client
+    model  string
+}
+
+func NewOpenAIEmbedder(apiKey, model string) *OpenAIEmbedder {
+    return &OpenAIEmbedder{
+        client: openai.NewClient(apiKey),
+        model:  model,
+    }
+}
+
+func (e *OpenAIEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
+    resp, err := e.client.CreateEmbeddings(ctx,
+        openai.EmbeddingRequestStrings{
+            Input: []string{text},
+            Model: openai.EmbeddingModel(e.model),
+        },
+    )
+    if err != nil {
+        return nil, err
+    }
+
+    raw := resp.Data[0].Embedding
+    vec := make([]float64, len(raw))
+    for i, v := range raw {
+        vec[i] = float64(v)
+    }
+    return vec, nil
+}
+
+// use it
+embedder := NewOpenAIEmbedder(os.Getenv("OPENAI_API_KEY"), "text-embedding-3-small")
+scorer := embedding.NewAnswerSimilarityScorer(embedder)
+```
+
+### Ollama embeddings example — fully local
+
+```go
+type OllamaEmbedder struct {
+    host  string // e.g. "http://localhost:11434"
+    model string // e.g. "nomic-embed-text"
+}
+
+func NewOllamaEmbedder(host, model string) *OllamaEmbedder {
+    return &OllamaEmbedder{host: host, model: model}
+}
+
+func (e *OllamaEmbedder) Embed(ctx context.Context, text string) ([]float64, error) {
+    body, _ := json.Marshal(map[string]string{
+        "model":  e.model,
+        "prompt": text,
+    })
+
+    req, _ := http.NewRequestWithContext(ctx, "POST",
+        e.host+"/api/embeddings", bytes.NewReader(body))
+    req.Header.Set("Content-Type", "application/json")
+
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+
+    var result struct {
+        Embedding []float64 `json:"embedding"`
+    }
+    json.NewDecoder(resp.Body).Decode(&result)
+    return result.Embedding, nil
+}
+
+// use it — no API key, fully local
+embedder := NewOllamaEmbedder("http://localhost:11434", "nomic-embed-text")
+scorer := embedding.NewChunkRelevanceScorer(embedder)
+```
+
+---
+
+## SDK usage — Go RAG apps
+
+Import the eval package directly and score inline without any CLI or JSON file:
+
+```go
+import (
+    "github.com/Shubham-Jitendra-Bhadra/ragcheck/internal/eval"
+    "github.com/Shubham-Jitendra-Bhadra/ragcheck/internal/eval/heuristic"
+    "github.com/Shubham-Jitendra-Bhadra/ragcheck/internal/eval/overlap"
+    "github.com/Shubham-Jitendra-Bhadra/ragcheck/internal/eval/llm"
+    ragllm "github.com/Shubham-Jitendra-Bhadra/ragcheck/internal/llm"
+)
+
+// set up once at startup
 client := ragllm.New(os.Getenv("ANTHROPIC_API_KEY"), "claude-haiku-4-5-20251001")
 
 scorers := []eval.Scorer{
@@ -146,7 +504,9 @@ scorers := []eval.Scorer{
     llm.NewHallucinationScorer(client),
 }
 
-// in your RAG handler — score async so user response is not blocked
+runner := eval.NewRunner(scorers)
+
+// in your RAG handler — runs async, never blocks the response
 go func() {
     c := eval.EvalCase{
         ID:              requestID,
@@ -154,9 +514,12 @@ go func() {
         RetrievedChunks: chunks,
         Answer:          answer,
         Model:           "claude-sonnet-4-6",
-        Metadata:        map[string]string{"latency_ms": "342"},
+        Metadata:        map[string]string{
+            "latency_ms": fmt.Sprintf("%d", latencyMs),
+        },
     }
-    runner.Evaluate(ctx, c, scorers)
+    results, _ := runner.Run(context.Background(), []eval.EvalCase{c}, nil)
+    store.SaveResult(context.Background(), results[0])
 }()
 ```
 
@@ -164,23 +527,34 @@ go func() {
 
 ## CI/CD quality gate
 
-Add ragcheck to GitHub Actions to block deploys when quality drops:
+Block deploys when RAG quality drops:
 
 ```yaml
-- name: Install ragcheck
-  run: go install github.com/yourusername/ragcheck/cmd/ragcheck@latest
+# .github/workflows/rag-quality.yml
+name: RAG quality gate
 
-- name: Run quality gate
-  run: ragcheck run --input testdata/golden.json --fail-below 0.75
-  env:
-    ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+on: [push, pull_request]
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install ragcheck
+        run: go install github.com/Shubham-Jitendra-Bhadra/ragcheck/cmd/ragcheck@latest
+
+      - name: Run quality gate
+        run: ragcheck run --input testdata/golden.json --fail-below 0.75
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
 ```
 
 ---
 
 ## Compare models
 
-Run the same test cases through different models and compare:
+Run the same cases through different models and compare scores:
 
 ```bash
 ragcheck run --input cases.json --model claude-haiku-4-5-20251001
@@ -191,12 +565,16 @@ ragcheck compare --run-a 1 --run-b 2
 Output:
 
 ```
-metric              haiku     sonnet    delta
-faithfulness        0.81      0.94      +0.13
-relevancy           0.88      0.87      -0.01
-bleu_score          0.71      0.79      +0.08
-chunk_utilisation   0.60      0.62      +0.02
-latency_ms          1.00      0.50      -0.50
+metric                run 1    run 2    delta
+─────────────────────────────────────────────
+faithfulness          0.81     0.94     +0.13  ↑
+relevancy             0.88     0.87     -0.01
+f1_token_match        0.71     0.79     +0.08  ↑
+bleu_score            0.68     0.75     +0.07  ↑
+chunk_utilisation     0.60     0.62     +0.02  ↑
+hallucination         0.85     0.91     +0.06  ↑
+
+overall               0.79     0.84     +0.05  ↑
 ```
 
 ---
@@ -207,17 +585,17 @@ latency_ms          1.00      0.50      -0.50
 ragcheck/
 ├── cmd/ragcheck/            binary entrypoint
 ├── internal/
-│   ├── cli/                 cobra commands
+│   ├── cli/                 cobra commands — run, compare, report
 │   ├── eval/
-│   │   ├── types.go         EvalCase, Score, Scorer interface
+│   │   ├── types.go         EvalCase, Score, Result, Scorer interface
+│   │   ├── runner.go        concurrent runner — goroutines + rate limiting
 │   │   ├── heuristic/       length, refusal, coverage, utilisation, latency
 │   │   ├── overlap/         F1, ROUGE-L, BLEU, conciseness
 │   │   ├── embedding/       answer similarity, chunk relevance
-│   │   └── llm/             faithfulness, relevancy, recall, hallucination,
-│   │                        completeness, coherence, toxicity
-│   ├── llm/                 Anthropic client wrapper
+│   │   └── llm/             faithfulness, relevancy, recall, hallucination
+│   ├── llm/                 Anthropic client + Voyage embedder
 │   ├── store/               SQLite persistence
-│   └── report/              terminal tables, JSON export
+│   └── report/              output formatting
 └── testdata/                example eval cases
 ```
 
@@ -226,8 +604,9 @@ ragcheck/
 ## Requirements
 
 - Go 1.22+
-- Anthropic API key (only required for LLM judge and embedding scorers)
-- Heuristic and overlap scorers work fully offline with no API key
+- Anthropic API key — only for LLM judge scorers
+- Voyage AI API key — only for embedding scorers
+- Heuristic and overlap scorers work fully offline with no API key at all
 
 ---
 
