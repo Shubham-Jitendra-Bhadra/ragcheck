@@ -1,6 +1,9 @@
 package eval
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // EvalCase is one test case — the input to any scorer.
 type EvalCase struct {
@@ -23,8 +26,13 @@ type Score struct {
 
 // Result bundles all scores for one EvalCase.
 type Result struct {
-	CaseID string
-	Scores []Score
+	CaseID    string
+	Model     string
+	Scores    []Score
+	Metadata  map[string]string
+	RunID     int64     // which eval run this belongs to — set by store
+	CreatedAt time.Time // when this result was scored
+	HasErrors bool      // true if any scorer returned an error
 }
 
 // Scorer is the interface every approach implements.
