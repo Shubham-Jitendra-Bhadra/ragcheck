@@ -1,0 +1,50 @@
+[
+  {
+    "id": "q1",
+    "query": "What is retrieval-augmented generation?",
+    "retrieved_chunks": [
+      "Retrieval-Augmented Generation (RAG) is a technique that combines a retrieval system with a language model. Instead of relying solely on its training data, the model retrieves relevant documents from an external knowledge base before generating a response.",
+      "RAG was introduced to address the hallucination problem in LLMs by grounding responses in factual, retrieved content."
+    ],
+    "answer": "RAG is a method that enhances language models by first retrieving relevant documents from a knowledge base, then using those documents to generate a more accurate and grounded response.",
+    "reference": "Retrieval-Augmented Generation is a technique where a language model retrieves relevant external documents before generating an answer, reducing hallucinations.",
+    "model": "claude-sonnet-4-6",
+    "metadata": {
+      "latency_ms": "342",
+      "chunk_size": "512",
+      "temperature": "0.7"
+    }
+  },
+  {
+    "id": "q2",
+    "query": "What are the main components of a RAG pipeline?",
+    "retrieved_chunks": [
+      "A typical RAG pipeline consists of three main components: a document store containing the knowledge base, a retriever that fetches relevant documents using vector similarity search, and a generator which is a language model that produces the final answer.",
+      "The retriever converts queries and documents into vector embeddings and uses cosine similarity to find the most relevant chunks."
+    ],
+    "answer": "A RAG pipeline has three components: a document store, a retriever that uses vector search to find relevant documents, and a language model generator that produces the final answer based on the retrieved context.",
+    "reference": "The main components are a document store, a vector retriever, and an LLM generator.",
+    "model": "claude-sonnet-4-6",
+    "metadata": {
+      "latency_ms": "289",
+      "chunk_size": "512",
+      "temperature": "0.7"
+    }
+  },
+  {
+    "id": "q3",
+    "query": "How does vector similarity search work?",
+    "retrieved_chunks": [
+      "Vector similarity search works by converting text into high-dimensional numerical vectors called embeddings. These vectors capture the semantic meaning of the text.",
+      "Cosine similarity measures the angle between two vectors — a score of 1.0 means identical meaning, 0.0 means unrelated."
+    ],
+    "answer": "Vector similarity search converts text into numerical embeddings that capture semantic meaning. It then measures cosine similarity between the query embedding and document embeddings to find the most relevant results.",
+    "reference": "Vector similarity search embeds text as vectors and measures cosine similarity to find semantically related documents.",
+    "model": "claude-sonnet-4-6",
+    "metadata": {
+      "latency_ms": "401",
+      "chunk_size": "512",
+      "temperature": "0.7"
+    }
+  }
+]

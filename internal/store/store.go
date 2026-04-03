@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/Shubham-Jitendra-Bhadra/ragcheck/internal/eval"
 	_ "modernc.org/sqlite"
 )
 
@@ -33,6 +34,24 @@ type ScoreRow struct {
 	Delta     float64
 	ReasoningA string
 	ReasoningB string
+}
+// ScoreDetail is one scorer result within a ResultRow.
+type ScoreDetail struct {
+	Metric    string  `json:"metric"`
+	Value     float64 `json:"value"`
+	Reasoning string  `json:"reasoning"`
+	Error     string  `json:"error,omitempty"`
+}
+
+// ResultRow is a flat representation of one EvalCase result
+// with all its scores — used for reporting.
+type ResultRow struct {
+	CaseID    string            `json:"case_id"`
+	Model     string            `json:"model"`
+	HasErrors bool              `json:"has_errors"`
+	CreatedAt time.Time         `json:"created_at"`
+	Metadata  map[string]string `json:"metadata"`
+	Scores    []ScoreDetail     `json:"scores"`
 }
 
 // New opens or creates a SQLite database at the given path.
@@ -96,20 +115,8 @@ func (s *Store) CreateRun(ctx context.Context, inputFile, model string, totalCas
 }
 
 // SaveResult saves one EvalCase result and all its scores in a transaction.
-func (s *Store) SaveResult(ctx context.Context, runID int64, result interface {
-	GetCaseID() string
-	GetModel() string
-	GetHasErrors() bool
-	GetCreatedAt() time.Time
-	GetMetadata() map[string]string
-	GetScores() []interface {
-		GetMetric() string
-		GetValue() float64
-		GetReasoning() string
-		GetError() error
-	}
-}) error {
-	meta, _ := json.Marshal(result.GetMetadata())
+func (s *Store) SaveResult(ctx context.Context, result eval.Result) error {
+	meta, _ := json.Marshal(result.Metadata)
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -120,11 +127,11 @@ func (s *Store) SaveResult(ctx context.Context, runID int64, result interface {
 	res, err := tx.ExecContext(ctx,
 		`INSERT INTO results (run_id, case_id, model, has_errors, created_at, metadata)
 		 VALUES (?, ?, ?, ?, ?, ?)`,
-		runID,
-		result.GetCaseID(),
-		result.GetModel(),
-		result.GetHasErrors(),
-		result.GetCreatedAt(),
+		result.RunID,
+		result.CaseID,
+		result.Model,
+		result.HasErrors,
+		result.CreatedAt,
 		string(meta),
 	)
 	if err != nil {
@@ -136,18 +143,18 @@ func (s *Store) SaveResult(ctx context.Context, runID int64, result interface {
 		return fmt.Errorf("get result id: %w", err)
 	}
 
-	for _, score := range result.GetScores() {
+	for _, score := range result.Scores {
 		errMsg := ""
-		if score.GetError() != nil {
-			errMsg = score.GetError().Error()
+		if score.Error != nil {
+			errMsg = score.Error.Error()
 		}
 		_, err = tx.ExecContext(ctx,
 			`INSERT INTO scores (result_id, metric, value, reasoning, error)
 			 VALUES (?, ?, ?, ?, ?)`,
 			resultID,
-			score.GetMetric(),
-			score.GetValue(),
-			score.GetReasoning(),
+			score.Metric,
+			score.Value,
+			score.Reasoning,
 			errMsg,
 		)
 		if err != nil {
@@ -265,6 +272,86 @@ func (s *Store) CompareRuns(ctx context.Context, runAID, runBID int64) ([]ScoreR
 	}
 
 	return result, nil
+}
+// GetResults fetches all results and their scores for a given run.
+func (s *Store) GetResults(ctx context.Context, runID int64) ([]ResultRow, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT
+			r.case_id,
+			r.model,
+			r.has_errors,
+			r.created_at,
+			r.metadata,
+			s.metric,
+			s.value,
+			s.reasoning,
+			s.error
+		FROM results r
+		JOIN scores s ON s.result_id = r.id
+		WHERE r.run_id = ?
+		ORDER BY r.case_id, s.metric
+	`, runID)
+	if err != nil {
+		return nil, fmt.Errorf("query results: %w", err)
+	}
+	defer rows.Close()
+
+	resultMap := make(map[string]*ResultRow)
+	var order []string
+
+	for rows.Next() {
+		var (
+			caseID    string
+			model     string
+			hasErrors bool
+			createdAt time.Time
+			metaRaw   string
+			metric    string
+			value     float64
+			reasoning string
+			scoreErr  string
+		)
+
+		if err := rows.Scan(
+			&caseID, &model, &hasErrors, &createdAt,
+			&metaRaw, &metric, &value, &reasoning, &scoreErr,
+		); err != nil {
+			return nil, fmt.Errorf("scan row: %w", err)
+		}
+
+		if _, exists := resultMap[caseID]; !exists {
+			var meta map[string]string
+			json.Unmarshal([]byte(metaRaw), &meta)
+
+			resultMap[caseID] = &ResultRow{
+				CaseID:    caseID,
+				Model:     model,
+				HasErrors: hasErrors,
+				CreatedAt: createdAt,
+				Metadata:  meta,
+				Scores:    []ScoreDetail{},
+			}
+			order = append(order, caseID)
+		}
+
+		resultMap[caseID].Scores = append(resultMap[caseID].Scores, ScoreDetail{
+			Metric:    metric,
+			Value:     value,
+			Reasoning: reasoning,
+			Error:     scoreErr,
+		})
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate rows: %w", err)
+	}
+
+	results := make([]ResultRow, 0, len(order))
+	for _, id := range order {
+		results = append(results, *resultMap[id])
+	}
+
+	return results, nil
 }
 
 // Close closes the database connection.
